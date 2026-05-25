@@ -783,8 +783,8 @@ else:
     tbl["Lock"] = tbl["Lock"].map({True:"🔒 Yes", False:"🔓 No"})
 
     styled = (tbl.style
-        .applymap(style_status, subset=["Status"])
-        .applymap(style_gap,    subset=["Gap"])
+        .map(style_status, subset=["Status"])
+        .map(style_gap,    subset=["Gap"])
         .set_properties(**{"font-family":"DM Mono, monospace","font-size":"11px"},
                          subset=["Scope (Seller·Country·SKU)","Promo SKU"])
     )
@@ -812,7 +812,7 @@ else:
         "combined_demand": "Combined demand",
         "verdict":         "Verdict",
     })
-    styled_conf = conf_show.style.applymap(style_verdict, subset=["Verdict"])
+    styled_conf = conf_show.style.map(style_verdict, subset=["Verdict"])
     st.dataframe(styled_conf, use_container_width=True, hide_index=True)
 
 # ── Heatmap ───────────────────────────────────────────────────────────────────
@@ -828,7 +828,7 @@ with st.expander("📋 View heatmap as table"):
                       "total_stock","ratio","units_at_risk","risk_level","scope_keys"]].copy()
     hm_show.columns = ["Day","Date","Active scopes","Total demand","Total stock",
                         "Demand ratio %","Units at risk","Risk level","Scope keys"]
-    styled_hm = hm_show.style.applymap(style_risk, subset=["Risk level"])
+    styled_hm = hm_show.style.map(style_risk, subset=["Risk level"])
     st.dataframe(styled_hm, use_container_width=True, hide_index=True)
 
 # ── Restock ────────────────────────────────────────────────────────────────────
