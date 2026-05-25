@@ -297,6 +297,26 @@ RISK_COLORS = {
     "None":   "#F5F4F0",
 }
 
+def safe_val(v):
+    """Convert pandas/numpy scalars to plain Python types xlsxwriter can handle."""
+    if v is None or v is pd.NA or v is pd.NaT:
+        return "—"
+    try:
+        import numpy as np
+        if isinstance(v, (np.integer,)):   return int(v)
+        if isinstance(v, (np.floating,)):  return float(v)
+        if isinstance(v, (np.bool_,)):     return bool(v)
+    except ImportError:
+        pass
+    if isinstance(v, float) and (v != v):  # NaN check
+        return "—"
+    return v
+
+def safe_num(v, fallback="—"):
+    """Return plain int/float or fallback string."""
+    sv = safe_val(v)
+    return sv if isinstance(sv, (int, float)) else fallback
+
 def build_excel(df_rows: pd.DataFrame, df_conf: pd.DataFrame, hm_df: pd.DataFrame) -> bytes:
     output = BytesIO()
     wb = xlsxwriter.Workbook(output, {"in_memory": True})
@@ -338,23 +358,23 @@ def build_excel(df_rows: pd.DataFrame, df_conf: pd.DataFrame, hm_df: pd.DataFram
             rf_mono = wb.add_format({"border":1,"font_name":"Courier New","font_size":9,"valign":"vcenter",
                                      "bg_color":STATUS_COLORS.get(st_,STATUS_COLORS["No lock"])["bg"],
                                      "font_color":STATUS_COLORS.get(st_,STATUS_COLORS["No lock"])["font"]})
-            ws1.write(ri, 0,  r["seller"],    rf)
-            ws1.write(ri, 1,  r["country"],   rf)
-            ws1.write(ri, 2,  r["brand"],     rf)
-            ws1.write(ri, 3,  r["channel"],   rf)
-            ws1.write(ri, 4,  r["scope_key"], rf_mono)
-            ws1.write(ri, 5,  r["base_sku"],  rf_mono)
-            ws1.write(ri, 6,  r["promo_sku"], rf_mono)
-            ws1.write(ri, 7,  r["campaign"],  rf)
-            ws1.write(ri, 8,  r["type"],      rf)
-            ws1.write(ri, 9,  r["start"],     rf)
-            ws1.write(ri, 10, r["end"],       rf)
+            ws1.write(ri, 0,  safe_val(r["seller"]),    rf)
+            ws1.write(ri, 1,  safe_val(r["country"]),   rf)
+            ws1.write(ri, 2,  safe_val(r["brand"]),     rf)
+            ws1.write(ri, 3,  safe_val(r["channel"]),   rf)
+            ws1.write(ri, 4,  safe_val(r["scope_key"]), rf_mono)
+            ws1.write(ri, 5,  safe_val(r["base_sku"]),  rf_mono)
+            ws1.write(ri, 6,  safe_val(r["promo_sku"]), rf_mono)
+            ws1.write(ri, 7,  safe_val(r["campaign"]),  rf)
+            ws1.write(ri, 8,  safe_val(r["type"]),      rf)
+            ws1.write(ri, 9,  safe_val(r["start"]),     rf)
+            ws1.write(ri, 10, safe_val(r["end"]),        rf)
             ws1.write(ri, 11, "Yes" if r["stock_lock"] else "No", rf)
-            ws1.write(ri, 12, r["stock"],     rf_num)
-            ws1.write(ri, 13, r["reserved"] if r["stock_lock"] else "—", rf_num)
-            ws1.write(ri, 14, r["demand"]   if r["stock_lock"] else "—", rf_num)
-            ws1.write(ri, 15, r["gap"]      if r["gap"] is not None else "—", rf_num)
-            ws1.write(ri, 16, st_,           rf)
+            ws1.write(ri, 12, safe_num(r["stock"]),      rf_num)
+            ws1.write(ri, 13, safe_num(r["reserved"]) if r["stock_lock"] else "—", rf_num)
+            ws1.write(ri, 14, safe_num(r["demand"])   if r["stock_lock"] else "—", rf_num)
+            ws1.write(ri, 15, safe_num(r["gap"])      if r["gap"] is not None else "—", rf_num)
+            ws1.write(ri, 16, safe_val(st_),           rf)
 
     # ── Sheet 2: Conflicts ───────────────────────────────────────────────────
     ws2 = wb.add_worksheet("Conflicts")
@@ -378,18 +398,18 @@ def build_excel(df_rows: pd.DataFrame, df_conf: pd.DataFrame, hm_df: pd.DataFram
                                     "align":"right","bg_color":bg,"font_color":fc})
             cf_mono = wb.add_format({"border":1,"font_name":"Courier New","font_size":9,
                                      "valign":"vcenter","bg_color":bg,"font_color":fc})
-            ws2.write(ri, 0,  r["scope_key"],       cf_mono)
-            ws2.write(ri, 1,  r["seller"],           cf)
-            ws2.write(ri, 2,  r["country"],          cf)
-            ws2.write(ri, 3,  r["brand"],            cf)
-            ws2.write(ri, 4,  r["channel"],          cf)
-            ws2.write(ri, 5,  r["stock"],            cf_num)
-            ws2.write(ri, 6,  r["campaign_a"],       cf)
-            ws2.write(ri, 7,  r["campaign_b"],       cf)
-            ws2.write(ri, 8,  r["overlap_start"],    cf)
-            ws2.write(ri, 9,  r["overlap_end"],      cf)
-            ws2.write(ri, 10, r["combined_demand"],  cf_num)
-            ws2.write(ri, 11, r["verdict"],          cf)
+            ws2.write(ri, 0,  safe_val(r["scope_key"]),       cf_mono)
+            ws2.write(ri, 1,  safe_val(r["seller"]),           cf)
+            ws2.write(ri, 2,  safe_val(r["country"]),          cf)
+            ws2.write(ri, 3,  safe_val(r["brand"]),            cf)
+            ws2.write(ri, 4,  safe_val(r["channel"]),          cf)
+            ws2.write(ri, 5,  safe_num(r["stock"]),            cf_num)
+            ws2.write(ri, 6,  safe_val(r["campaign_a"]),       cf)
+            ws2.write(ri, 7,  safe_val(r["campaign_b"]),       cf)
+            ws2.write(ri, 8,  safe_val(r["overlap_start"]),    cf)
+            ws2.write(ri, 9,  safe_val(r["overlap_end"]),      cf)
+            ws2.write(ri, 10, safe_num(r["combined_demand"]),  cf_num)
+            ws2.write(ri, 11, safe_val(r["verdict"]),          cf)
 
     # ── Sheet 3: Restock ─────────────────────────────────────────────────────
     ws3 = wb.add_worksheet("Restock")
@@ -439,18 +459,18 @@ def build_excel(df_rows: pd.DataFrame, df_conf: pd.DataFrame, hm_df: pd.DataFram
         rf  = wb.add_format({"border":1,"font_name":"Calibri","font_size":10,"valign":"vcenter","bg_color":bg,"font_color":fc})
         rfn = wb.add_format({"border":1,"font_name":"Calibri","font_size":10,"valign":"vcenter","align":"right","bg_color":bg,"font_color":fc})
         rfm = wb.add_format({"border":1,"font_name":"Courier New","font_size":9,"valign":"vcenter","bg_color":bg,"font_color":fc})
-        ws3.write(ri, 0,  row[0],  rf)
-        ws3.write(ri, 1,  row[1],  rfm)
-        ws3.write(ri, 2,  row[2],  rf)
-        ws3.write(ri, 3,  row[3],  rf)
-        ws3.write(ri, 4,  row[4],  rf)
-        ws3.write(ri, 5,  row[5],  rfm)
-        ws3.write(ri, 6,  row[6],  rfn)
-        ws3.write(ri, 7,  row[7],  rfn)
-        ws3.write(ri, 8,  row[8],  rfn)
-        ws3.write(ri, 9,  row[9],  rfn)
-        ws3.write(ri, 10, row[10], rfn)
-        ws3.write(ri, 11, row[11], rfn)
+        ws3.write(ri, 0,  safe_val(row[0]),  rf)
+        ws3.write(ri, 1,  safe_val(row[1]),  rfm)
+        ws3.write(ri, 2,  safe_val(row[2]),  rf)
+        ws3.write(ri, 3,  safe_val(row[3]),  rf)
+        ws3.write(ri, 4,  safe_val(row[4]),  rf)
+        ws3.write(ri, 5,  safe_val(row[5]),  rfm)
+        ws3.write(ri, 6,  safe_num(row[6]),  rfn)
+        ws3.write(ri, 7,  safe_num(row[7]),  rfn)
+        ws3.write(ri, 8,  safe_num(row[8]),  rfn)
+        ws3.write(ri, 9,  safe_num(row[9]),  rfn)
+        ws3.write(ri, 10, safe_num(row[10]), rfn)
+        ws3.write(ri, 11, safe_num(row[11]), rfn)
 
     # ── Sheet 4: Heatmap summary ─────────────────────────────────────────────
     ws4 = wb.add_worksheet("Heatmap summary")
@@ -470,15 +490,15 @@ def build_excel(df_rows: pd.DataFrame, df_conf: pd.DataFrame, hm_df: pd.DataFram
                                "bg_color":bg,"bold":bold})
         rfn  = wb.add_format({"border":1,"font_name":"Calibri","font_size":10,"valign":"vcenter",
                                "align":"right","bg_color":bg,"bold":bold})
-        ws4.write(ri, 0, r["day_label"],     rf)
-        ws4.write(ri, 1, r["date_str"],      rf)
-        ws4.write(ri, 2, r["active_scopes"], rfn)
-        ws4.write(ri, 3, r["total_demand"],  rfn)
-        ws4.write(ri, 4, r["total_stock"],   rfn)
-        ws4.write(ri, 5, str(r["ratio"])+"%",rfn)
-        ws4.write(ri, 6, r["units_at_risk"], rfn)
-        ws4.write(ri, 7, r["risk_level"],    rf)
-        ws4.write(ri, 8, r["scope_keys"],    rf)
+        ws4.write(ri, 0, safe_val(r["day_label"]),      rf)
+        ws4.write(ri, 1, safe_val(r["date_str"]),        rf)
+        ws4.write(ri, 2, safe_num(r["active_scopes"]),   rfn)
+        ws4.write(ri, 3, safe_num(r["total_demand"]),    rfn)
+        ws4.write(ri, 4, safe_num(r["total_stock"]),     rfn)
+        ws4.write(ri, 5, str(safe_val(r["ratio"]))+"%",  rfn)
+        ws4.write(ri, 6, safe_num(r["units_at_risk"]),   rfn)
+        ws4.write(ri, 7, safe_val(r["risk_level"]),      rf)
+        ws4.write(ri, 8, safe_val(r["scope_keys"]),      rf)
 
     wb.close()
     output.seek(0)
