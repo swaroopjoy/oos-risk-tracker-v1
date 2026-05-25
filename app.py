@@ -57,22 +57,9 @@ section[data-testid="stSidebar"] .block-container { padding: 1.5rem 1rem; }
 TODAY = date.today()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SEED DATA  (used until a file is uploaded)
+# EMPTY STATE — no data shown until a file is uploaded
 # ─────────────────────────────────────────────────────────────────────────────
-SEED_PROMOS = [
-    {"seller":"AAFHU","country":"TH","brand":"Oatside", "channel":"Lazada - Oatside",
-     "sku":"101336151x8","campaign":"LazFlash Mid Month","type":"Flash Sale",
-     "stock_lock":True,"start":"2026-05-15","end":"2026-05-20","reserved":24,"nominated":0,"stock":100},
-    {"seller":"AAFHU","country":"TH","brand":"Oatside", "channel":"Lazada - Oatside",
-     "sku":"101336151x8","campaign":"LazFlash Mid Month","type":"Flash Sale",
-     "stock_lock":True,"start":"2026-05-23","end":"2026-05-25","reserved":40,"nominated":0,"stock":100},
-    {"seller":"AAFHU","country":"TH","brand":"Hiruscar","channel":"TikTok-Hiruscar",
-     "sku":"101336151+101336152x6","campaign":"TikTok Live Promotion","type":"Flash Sale",
-     "stock_lock":True,"start":"2026-05-20","end":"2026-05-25","reserved":40,"nominated":0,"stock":100},
-    {"seller":"AAFHU","country":"TH","brand":"Hiruscar","channel":"TikTok-Hiruscar",
-     "sku":"101336151+101336152x6","campaign":"TikTok Live Promotion","type":"Voucher Promo",
-     "stock_lock":False,"start":"2026-05-20","end":"2026-05-25","reserved":0,"nominated":10,"stock":100},
-]
+SEED_PROMOS = []
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SKU PARSING
@@ -657,10 +644,14 @@ with st.sidebar:
             st.success(f"✓ {uploaded.name}  ·  {len(promos)} rows loaded")
         except Exception as e:
             st.error(f"Parse error: {e}")
-            promos = SEED_PROMOS
+            promos = []
     else:
-        promos = SEED_PROMOS
-        st.info("Using sample data — upload your sheet above.")
+        promos = []
+        st.markdown("""
+        <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:8px;
+             padding:12px 14px;font-size:13px;color:#7a5c00;margin-top:4px">
+            📂 Upload your reservation tracker sheet to get started.
+        </div>""", unsafe_allow_html=True)
 
     st.divider()
 
@@ -751,6 +742,29 @@ hm_df   = compute_heatmap(df_rows, TODAY)
 st.markdown("## 📦 Stock OOS Risk Tracker")
 st.caption("Stock scoped per **Seller + Country** — same SKU in different countries is treated as separate stock. "
            "Demand & OOS calculated only for **Stock lock = Yes** rows.")
+
+# ── No file uploaded yet — show welcome screen ────────────────────────────────
+if not promos:
+    st.markdown("""
+    <div style="margin-top:48px;text-align:center;padding:48px 32px;
+         background:#ffffff;border:1px dashed #ccc9bc;border-radius:16px;color:#6b6860">
+        <div style="font-size:48px;margin-bottom:16px">📂</div>
+        <div style="font-size:18px;font-weight:500;color:#1a1917;margin-bottom:8px">
+            No data loaded yet
+        </div>
+        <div style="font-size:14px;margin-bottom:24px">
+            Upload your Stock Reservation Tracker sheet using the sidebar to begin analysis.
+        </div>
+        <div style="font-size:12px;background:#f5f4f0;border-radius:8px;
+             padding:12px 20px;display:inline-block;text-align:left;color:#9e9b91">
+            Supported columns: Seller code · Country · Brand · Channel · SKU ·
+            Campaign / Promotion Name · Campaign Type · Stock Lock / Reserved ·
+            Promo Start Date · Promo End Date · Today's Stock · Reserved by DKSH /
+            Graas / MP · Nominated stock
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
 locked_rows = df_rows[df_rows["stock_lock"]] if not df_rows.empty else pd.DataFrame()
