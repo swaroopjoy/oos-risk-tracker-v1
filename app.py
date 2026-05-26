@@ -79,130 +79,232 @@ def scope_key(seller, country, base_sku):
 # ─────────────────────────────────────────────────────────────────────────────
 # XLSX UPLOAD PARSER
 # ─────────────────────────────────────────────────────────────────────────────
-def parse_upload(file) -> list[dict]:
+def parse_upload(file) -> tuple[list[dict], dict]:
+    """
+    Parse the reservation tracker sheet.
+
+    Key rules:
+    - Column lookup is always by TITLE, never by position.
+    - Stock Lock is read from the 'Stock Lock / Reserved' column on the MAIN row
+      and inherited by continuation rows (which have NaN in that column).
+    - Total reservation = 'Total Reserved Across All Campaigns' column (not sum
+      of individual columns, which would double-count).
+    - Stock is stored per country + base_sku and SHARED across all promos in
+      that country — same physical warehouse.
+    - Continuation rows (blank SKU, blank seller) supply stock + reservations
+      for the next component of the combo SKU above them.
+
+    Returns:
+        promos    — list of promo component dicts ready for compute_rows
+        stock_map — {scope_key: stock} where scope = "seller|country|base_sku"
+    """
     df = pd.read_excel(file, sheet_name=0, dtype=str)
     df.columns = [c.strip() for c in df.columns]
 
-    col_map = {
-        "seller":     ["Seller code","Seller Code","seller"],
-        "country":    ["Country","country"],
-        "brand":      ["Brand","brand"],
-        "channel":    ["Channel","channel"],
-        "sku":        ["SKU","sku","Promo SKU"],
-        "campaign":   ["Campaign / Promotion Name","Campaign Name","campaign"],
-        "type":       ["Campaign Type","Campaign type","type"],
-        "stock_lock": ["Stock Lock / Reserved","Stock lock","stock_lock"],
-        "start":      ["Promo Start Date","Start Date","start"],
-        "end":        ["Promo End Date","End Date","end"],
-        "stock":      ["Today's Stock for Base SKU - (24 may)","Today's Stock","Stock","stock"],
-        "reserved_dksh":  ["Reserved by DKSH","reserved_dksh"],
-        "reserved_graas": ["Reserved by Graas","reserved_graas"],
-        "reserved_mp":    ["Reserved by MP","reserved_mp"],
-        "nominated":  ["Nominated stock (Non Reservation)","Nominated Stock","nominated"],
+    # ── Column name aliases (title-based, never positional) ────────────────
+    COL = {
+        "seller":    ["Seller code","Seller Code","Seller"],
+        "country":   ["Country"],
+        "brand":     ["Brand"],
+        "channel":   ["Channel"],
+        "sku":       ["SKU","Promo SKU","sku"],
+        "campaign":  ["Campaign / Promotion Name","Campaign Name"],
+        "type":      ["Campaign Type","Campaign type"],
+        "lock":      ["Stock Lock / Reserved","Stock Lock","Stock lock"],
+        "start":     ["Promo Start Date","Start Date"],
+        "end":       ["Promo End Date","End Date"],
+        "stock":     ["Today's Stock for Base SKU - (24 may)",
+                      "Today's Stock for Base SKU","Today's Stock","Stock"],
+        "total_res": ["Total Reserved Across All Campaigns",
+                      "Total Reserved","total_reserved"],
+        "nominated": ["Nominated stock (Non Reservation)","Nominated Stock","Nominated stock"],
     }
 
     def find_col(key):
-        for name in col_map[key]:
-            if name in df.columns:
-                return name
+        """Return the actual column name in df for a logical key, or None."""
+        for alias in COL.get(key, []):
+            if alias in df.columns:
+                return alias
         return None
 
-    promos = []
-    last = {}
+    def gv(row, key):
+        """Get clean string value from row by logical key. Returns None if blank/NaN."""
+        col = find_col(key)
+        if not col:
+            return None
+        val = row.get(col)
+        if val is None:
+            return None
+        s = str(val).strip()
+        return None if s in ("", "nan", "None", "NaT", "NaN") else s
+
+    def gn(row, key):
+        """Get numeric value from row by logical key. Returns 0 if missing."""
+        v = gv(row, key)
+        try:    return float(v) if v is not None else 0.0
+        except: return 0.0
+
+    def gdate(row, key, fallback=""):
+        v = gv(row, key)
+        if not v: return fallback
+        try:    return pd.to_datetime(v).strftime("%Y-%m-%d")
+        except: return fallback
+
+    # ── Pass 1: parse all rows into structured records ────────────────────
+    # Each record = one base-SKU component of one promo event
+    records = []
+    stock_map = {}          # "seller|country|base_sku" → stock (shared per country)
+    last = {}               # last seen main-row metadata
+    pending_comps = []      # remaining components of current combo SKU
+
     for _, row in df.iterrows():
-        def g(key, default=None):
-            col = find_col(key)
-            val = row.get(col, default) if col else default
-            return val if pd.notna(val) and str(val).strip() not in ("","nan","None") else default
+        raw_sku    = gv(row, "sku")
+        raw_seller = gv(row, "seller")
+        raw_lock   = gv(row, "lock")   # only non-null on main rows
+        raw_stock  = gv(row, "stock")
 
-        seller   = g("seller")   or last.get("seller")
-        country  = g("country")  or last.get("country")
-        brand    = g("brand")    or last.get("brand")
-        channel  = g("channel")  or last.get("channel")
-        sku      = g("sku")      or last.get("sku")
-        campaign = g("campaign") or last.get("campaign")
-        typ      = g("type")     or last.get("type")
+        is_main = bool(raw_sku and raw_seller)
+        is_cont = bool(not raw_sku and not raw_seller and raw_stock and last)
 
-        start_raw = g("start")
-        end_raw   = g("end")
-        try:
-            start = pd.to_datetime(start_raw).strftime("%Y-%m-%d") if start_raw else last.get("start","")
-        except Exception:
-            start = last.get("start","")
-        try:
-            end = pd.to_datetime(end_raw).strftime("%Y-%m-%d") if end_raw else last.get("end","")
-        except Exception:
-            end = last.get("end","")
+        if is_main:
+            seller   = raw_seller
+            country  = gv(row,"country")  or last.get("country","")
+            brand    = gv(row,"brand")    or last.get("brand","")
+            channel  = gv(row,"channel")  or last.get("channel","")
+            campaign = gv(row,"campaign") or last.get("campaign","")
+            typ      = gv(row,"type")     or last.get("type","")
+            start    = gdate(row,"start", last.get("start",""))
+            end      = gdate(row,"end",   last.get("end",""))
 
-        lock_raw = str(g("stock_lock") or "").strip().lower()
-        stock_lock = lock_raw in ("yes","true","1","y")
+            # Lock: read from the lock column on this row only
+            lock_val   = str(raw_lock or "").strip().lower()
+            stock_lock = lock_val in ("yes","true","1","y")
 
-        try: stock = float(g("stock") or 0)
-        except: stock = 0
+            stock     = gn(row, "stock")
+            total_res = gn(row, "total_res")   # use the total column
+            nominated = gn(row, "nominated")
 
-        try:
-            reserved = sum(float(g(k) or 0) for k in ["reserved_dksh","reserved_graas","reserved_mp"])
-        except: reserved = 0
+            components = parse_sku(raw_sku)
 
-        try: nominated = float(g("nominated") or 0)
-        except: nominated = 0
+            # Stock for first component — shared per country+base_sku
+            if components:
+                sk = scope_key(seller, country, components[0]["base"])
+                stock_map[sk] = int(stock)   # always update (latest row wins)
 
-        if sku and start and seller and country:
-            last = dict(seller=seller,country=country,brand=brand,channel=channel,
-                        sku=sku,campaign=campaign,type=typ,start=start,end=end)
-            promos.append(dict(seller=seller,country=country,brand=brand,channel=channel,
-                               sku=sku,campaign=campaign,type=typ,stock_lock=stock_lock,
-                               start=start,end=end,reserved=reserved,nominated=nominated,stock=stock))
-    return promos
+            pending_comps = list(components[1:])  # remaining components
+
+            last = dict(seller=seller, country=country, brand=brand, channel=channel,
+                        campaign=campaign, type=typ, start=start, end=end,
+                        stock_lock=stock_lock, sku=raw_sku)
+
+            # Emit one record per component of this promo SKU
+            for comp in components:
+                records.append(dict(
+                    seller=seller, country=country, brand=brand, channel=channel,
+                    sku=raw_sku, base_sku=comp["base"], mult=comp["mult"],
+                    campaign=campaign, type=typ, start=start, end=end,
+                    stock_lock=stock_lock,
+                    total_res=total_res,   # same total for all components
+                    nominated=nominated,
+                    _stock_raw=int(stock), # will be replaced from stock_map later
+                ))
+
+        elif is_cont and pending_comps:
+            # Continuation row: stock + total_res for the NEXT pending component
+            comp      = pending_comps.pop(0)
+            cont_stock = gn(row, "stock")
+            cont_res   = gn(row, "total_res")
+            cont_nom   = gn(row, "nominated")
+
+            sk = scope_key(last["seller"], last["country"], comp["base"])
+            stock_map[sk] = int(cont_stock)
+
+            # Update the matching record emitted from the main row above
+            # (find it by base_sku + campaign + sku)
+            for rec in reversed(records):
+                if (rec["base_sku"] == comp["base"]
+                        and rec["campaign"] == last["campaign"]
+                        and rec["sku"] == last["sku"]):
+                    rec["total_res"]  = cont_res
+                    rec["nominated"]  = cont_nom
+                    rec["_stock_raw"] = int(cont_stock)
+                    break
+
+    return records, stock_map
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CORE CALCULATIONS  — all scoped to seller + country + base_sku
+# CORE CALCULATIONS — scoped to country + base_sku
+# (stock is shared per country regardless of seller/channel)
 # ─────────────────────────────────────────────────────────────────────────────
-def compute_rows(promos: list[dict]) -> pd.DataFrame:
+def compute_rows(promos: list[dict], stock_map: dict) -> pd.DataFrame:
+    """
+    For each promo-component record:
+      - demand = total_res × mult  (reservations already reflect orders × units)
+      - stock  = shared stock for that country + base_sku
+      - gap    = stock − total demand across ALL promos for that scope
+                 (NOT per-row gap — aggregated below in compute_scope_summary)
+    """
     rows = []
     for p in promos:
-        for comp in parse_sku(p["sku"]):
-            base  = comp["base"]
-            mult  = comp["mult"]
-            stock = p["stock"]
-            demand    = int(p["reserved"] * mult) if p["stock_lock"] else 0
-            gap       = (stock - demand) if p["stock_lock"] else None
-            oos       = bool(p["stock_lock"] and gap is not None and gap < 0)
-            restock   = abs(gap) if oos else 0
-            rows.append({
-                "seller":     p["seller"],
-                "country":    p["country"],
-                "brand":      p["brand"],
-                "channel":    p["channel"],
-                "scope_key":  scope_key(p["seller"], p["country"], base),
-                "base_sku":   base,
-                "promo_sku":  p["sku"],
-                "mult":       mult,
-                "campaign":   p["campaign"],
-                "type":       p["type"],
-                "start":      p["start"],
-                "end":        p["end"],
-                "stock_lock": p["stock_lock"],
-                "stock":      int(stock),
-                "reserved":   int(p["reserved"]),
-                "nominated":  int(p["nominated"]),
-                "demand":     demand,
-                "gap":        gap,
-                "oos":        oos,
-                "restock":    restock,
-                "status":     ("OOS" if oos else
-                               "Watch" if (p["stock_lock"] and gap is not None and gap < 20) else
-                               "Safe" if p["stock_lock"] else "No lock"),
-            })
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
+        sk    = scope_key(p["seller"], p["country"], p["base_sku"])
+        stock = stock_map.get(sk, p.get("_stock_raw", 0))
+        # demand per base SKU unit = total_res × multiplier
+        demand = int(p["total_res"] * p["mult"]) if p["stock_lock"] else 0
+
+        rows.append({
+            "seller":     p["seller"],
+            "country":    p["country"],
+            "brand":      p["brand"],
+            "channel":    p["channel"],
+            "scope_key":  sk,
+            "scope_label": f"{p['seller']} · {p['country']} · {p['base_sku']}",
+            "base_sku":   p["base_sku"],
+            "promo_sku":  p["sku"],
+            "mult":       p["mult"],
+            "campaign":   p["campaign"],
+            "type":       p["type"],
+            "start":      p["start"],
+            "end":        p["end"],
+            "stock_lock": p["stock_lock"],
+            "stock":      int(stock),
+            "total_res":  int(p["total_res"]),
+            "nominated":  int(p.get("nominated", 0)),
+            "demand":     demand,          # base units consumed by this promo
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+
+    # ── Aggregate total demand per scope across all locked promos ──────────
+    locked = df[df["stock_lock"]]
+    scope_demand = locked.groupby("scope_key")["demand"].sum().rename("total_demand")
+    df = df.merge(scope_demand, on="scope_key", how="left")
+    df["total_demand"] = df["total_demand"].fillna(0).astype(int)
+
+    # ── Gap and OOS based on aggregated demand vs shared stock ─────────────
+    df["gap"]     = df.apply(lambda r: int(r["stock"] - r["total_demand"]) if r["stock_lock"] else None, axis=1)
+    df["oos"]     = df.apply(lambda r: bool(r["stock_lock"] and r["gap"] is not None and r["gap"] < 0), axis=1)
+    df["restock"] = df.apply(lambda r: abs(r["gap"]) if r["oos"] else 0, axis=1)
+    df["status"]  = df.apply(lambda r:
+        "OOS"     if r["oos"] else
+        "Watch"   if (r["stock_lock"] and r["gap"] is not None and r["gap"] < 20) else
+        "Safe"    if r["stock_lock"] else
+        "No lock", axis=1)
+
+    return df
 
 def compute_conflicts(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
     locked = df[df["stock_lock"]].copy()
     conflicts = []
+    # Group by scope — each scope has its total_demand vs stock already computed
+    # Conflicts exist when 2+ different campaigns overlap in date within same scope
     for scope, grp in locked.groupby("scope_key"):
-        rows = grp.to_dict("records")
+        rows = grp.drop_duplicates(subset=["campaign","start","end"]).to_dict("records")
         for i in range(len(rows)):
             for j in range(i+1, len(rows)):
                 a, b = rows[i], rows[j]
@@ -214,6 +316,7 @@ def compute_conflicts(df: pd.DataFrame) -> pd.DataFrame:
                     combined = a["demand"] + b["demand"]
                     conflicts.append({
                         "scope_key":       scope,
+                        "scope_label":     a["scope_label"],
                         "seller":          a["seller"],
                         "country":         a["country"],
                         "brand":           a["brand"],
@@ -358,7 +461,7 @@ def build_excel(df_rows: pd.DataFrame, df_conf: pd.DataFrame, hm_df: pd.DataFram
             ws1.write(ri, 10, safe_val(r["end"]),        rf)
             ws1.write(ri, 11, "Yes" if r["stock_lock"] else "No", rf)
             ws1.write(ri, 12, safe_num(r["stock"]),      rf_num)
-            ws1.write(ri, 13, safe_num(r["reserved"]) if r["stock_lock"] else "—", rf_num)
+            ws1.write(ri, 13, safe_num(r["total_res"]) if r["stock_lock"] else "—", rf_num)
             ws1.write(ri, 14, safe_num(r["demand"])   if r["stock_lock"] else "—", rf_num)
             ws1.write(ri, 15, safe_num(r["gap"])      if r["gap"] is not None else "—", rf_num)
             ws1.write(ri, 16, safe_val(st_),           rf)
@@ -571,10 +674,11 @@ def render_restock(df_rows: pd.DataFrame):
 
     # ── Hard OOS ─────────────────────────────────────────────────────────────
     st.markdown('<div class="rs-label-hard">🔒 Hard OOS — locked stock only</div>', unsafe_allow_html=True)
+    # One entry per scope (de-duplicated — gap/restock are the same for all rows in a scope)
     hard_by_scope = {}
     for _, r in df_rows[df_rows["oos"]].iterrows():
         k = r["scope_key"]
-        if k not in hard_by_scope or hard_by_scope[k]["restock"] < r["restock"]:
+        if k not in hard_by_scope:
             hard_by_scope[k] = r
 
     if not hard_by_scope:
@@ -588,9 +692,11 @@ def render_restock(df_rows: pd.DataFrame):
               <div>
                 <div style="font-family:'DM Mono',monospace;font-size:12px;font-weight:500;color:#C0392B">{r['base_sku']}</div>
                 <div style="font-size:10px;color:#C0392B;opacity:.7;font-family:'DM Mono',monospace">{r['seller']} · {r['country']}</div>
-                <div style="font-size:11px;color:#C0392B;opacity:.8;margin-top:2px">{r['brand']} · {r['channel']} · {r['campaign']} · stock {r['stock']}, locked demand {r['demand']}</div>
+                <div style="font-size:11px;color:#C0392B;opacity:.8;margin-top:2px">
+                  {r['brand']} · stock {r['stock']} · total demand across all promos {r['total_demand']} · deficit {abs(int(r['gap']))}
+                </div>
               </div>
-              <div style="font-size:16px;font-weight:600;color:#C0392B;margin-left:16px;white-space:nowrap">+{r['restock']} units</div>
+              <div style="font-size:16px;font-weight:600;color:#C0392B;margin-left:16px;white-space:nowrap">+{abs(int(r['gap']))} units</div>
             </div>""", unsafe_allow_html=True)
 
     # ── Soft Risk ─────────────────────────────────────────────────────────────
@@ -599,10 +705,12 @@ def render_restock(df_rows: pd.DataFrame):
     for _, r in df_rows.iterrows():
         k = r["scope_key"]
         if k not in scope_agg:
-            scope_agg[k] = {"locked":0,"nominated":0,"stock":r["stock"],"base_sku":r["base_sku"],
-                             "seller":r["seller"],"country":r["country"],"brand":r["brand"],"channel":r["channel"]}
-        if r["stock_lock"]: scope_agg[k]["locked"]   += r["demand"]
-        else:               scope_agg[k]["nominated"] += r["nominated"]
+            scope_agg[k] = {"locked": int(r["total_demand"]) if r["stock_lock"] else 0,
+                             "nominated": 0, "stock": r["stock"],
+                             "base_sku": r["base_sku"], "seller": r["seller"],
+                             "country": r["country"], "brand": r["brand"], "channel": r["channel"]}
+        if not r["stock_lock"]:
+            scope_agg[k]["nominated"] += int(r["nominated"])
 
     soft_items = [(k, s) for k, s in scope_agg.items()
                   if s["nominated"] > 0 and s["stock"] - s["locked"] - s["nominated"] < 0]
@@ -611,9 +719,9 @@ def render_restock(df_rows: pd.DataFrame):
         st.caption("No soft risk when nominated stock is included.")
     else:
         for k, s in soft_items:
-            combined  = s["locked"] + s["nominated"]
-            gap_soft  = s["stock"] - combined
-            extra     = abs(gap_soft)
+            combined = s["locked"] + s["nominated"]
+            gap_soft = s["stock"] - combined
+            extra    = abs(gap_soft)
             st.markdown(f"""
             <div style="display:flex;align-items:center;justify-content:space-between;
                 padding:11px 14px;background:#FEF9EC;border:1px solid #F5DFA0;
@@ -621,7 +729,7 @@ def render_restock(df_rows: pd.DataFrame):
               <div>
                 <div style="font-family:'DM Mono',monospace;font-size:12px;font-weight:500;color:#B45309">{s['base_sku']}</div>
                 <div style="font-size:10px;color:#B45309;opacity:.7;font-family:'DM Mono',monospace">{s['seller']} · {s['country']}</div>
-                <div style="font-size:11px;color:#B45309;opacity:.8;margin-top:2px">{s['brand']} · {s['channel']} · stock {s['stock']} · locked {s['locked']} + nominated {s['nominated']} = combined {combined}</div>
+                <div style="font-size:11px;color:#B45309;opacity:.8;margin-top:2px">{s['brand']} · stock {s['stock']} · locked {s['locked']} + nominated {s['nominated']} = combined {combined}</div>
               </div>
               <div style="font-size:16px;font-weight:600;color:#B45309;margin-left:16px;white-space:nowrap">+{extra} units</div>
             </div>""", unsafe_allow_html=True)
@@ -640,13 +748,13 @@ with st.sidebar:
 
     if uploaded:
         try:
-            promos = parse_upload(uploaded)
+            promos, stock_map = parse_upload(uploaded)
             st.success(f"✓ {uploaded.name}  ·  {len(promos)} rows loaded")
         except Exception as e:
             st.error(f"Parse error: {e}")
-            promos = []
+            promos, stock_map = [], {}
     else:
-        promos = []
+        promos, stock_map = [], {}
         st.markdown("""
         <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:8px;
              padding:12px 14px;font-size:13px;color:#7a5c00;margin-top:4px">
@@ -727,7 +835,7 @@ filtered_promos = [
     and (not st.session_state.sku_list or p["sku"] in st.session_state.sku_list)
 ]
 
-df_rows = compute_rows(filtered_promos)
+df_rows = compute_rows(filtered_promos, stock_map)
 if not df_rows.empty and sel_show == "OOS risk only":
     df_rows = df_rows[df_rows["oos"]]
 elif not df_rows.empty and sel_show == "Safe stock only":
@@ -792,24 +900,29 @@ if df_rows.empty:
 else:
     display_df = df_rows.sort_values(["seller","country","base_sku","stock_lock"],
                                       ascending=[True,True,True,False]).copy()
-    display_df["status_label"] = display_df["status"].map(STATUS_EMOJI)
-    display_df["demand_disp"]  = display_df.apply(lambda r: r["demand"] if r["stock_lock"] else "—", axis=1)
-    display_df["gap_disp"]     = display_df.apply(lambda r: r["gap"] if r["gap"] is not None else "—", axis=1)
-    display_df["reserved_disp"]= display_df.apply(lambda r: r["reserved"] if r["stock_lock"] else "—", axis=1)
+    display_df["status_label"]   = display_df["status"].map(STATUS_EMOJI)
+    display_df["mult_label"]     = display_df["mult"].apply(lambda m: f"×{m}")
+    display_df["demand_disp"]    = display_df.apply(lambda r: r["demand"]       if r["stock_lock"] else "—", axis=1)
+    display_df["total_res_disp"] = display_df.apply(lambda r: r["total_res"]    if r["stock_lock"] else "—", axis=1)
+    display_df["total_dem_disp"] = display_df.apply(lambda r: r["total_demand"] if r["stock_lock"] else "—", axis=1)
+    display_df["gap_disp"]       = display_df.apply(lambda r: r["gap"]          if r["gap"] is not None else "—", axis=1)
 
     show_cols = {
-        "scope_key":      "Scope (Seller·Country·SKU)",
+        "scope_label":    "Scope (Seller · Country · Base SKU)",
+        "base_sku":       "Base SKU",
+        "mult_label":     "Multiplier",
+        "promo_sku":      "Promo SKU",
         "brand":          "Brand",
         "channel":        "Channel",
-        "promo_sku":      "Promo SKU",
         "campaign":       "Campaign",
         "type":           "Type",
         "start":          "Start",
         "end":            "End",
         "stock_lock":     "Lock",
-        "stock":          "Stock",
-        "demand_disp":    "Demand",
-        "reserved_disp":  "Reserved",
+        "stock":          "Stock (shared)",
+        "total_res_disp": "Orders reserved",
+        "demand_disp":    "Base units demand",
+        "total_dem_disp": "Total demand (all promos)",
         "gap_disp":       "Gap",
         "status_label":   "Status",
     }
@@ -820,7 +933,7 @@ else:
         .map(style_status, subset=["Status"])
         .map(style_gap,    subset=["Gap"])
         .set_properties(**{"font-family":"DM Mono, monospace","font-size":"11px"},
-                         subset=["Scope (Seller·Country·SKU)","Promo SKU"])
+                         subset=["Scope (Seller · Country · Base SKU)","Base SKU","Promo SKU"])
     )
     st.dataframe(styled, use_container_width=True, hide_index=True, height=min(40 + 35*len(tbl), 500))
 
@@ -832,13 +945,13 @@ if df_conf.empty:
     st.success("✅ No conflicts found in selected date range.")
 else:
     conf_show = df_conf.sort_values("scope_key")[
-        ["scope_key","brand","channel","stock","campaign_a","campaign_b",
+        ["scope_label","brand","channel","stock","campaign_a","campaign_b",
          "overlap_start","overlap_end","combined_demand","verdict"]
     ].rename(columns={
-        "scope_key":       "Scope key",
+        "scope_label":     "Scope (Seller · Country · Base SKU)",
         "brand":           "Brand",
         "channel":         "Channel",
-        "stock":           "Stock",
+        "stock":           "Stock (shared)",
         "campaign_a":      "Campaign A",
         "campaign_b":      "Campaign B",
         "overlap_start":   "Overlap start",
