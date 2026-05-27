@@ -34,10 +34,12 @@ TODAY = date.today()
 # SKU PARSING
 # ─────────────────────────────────────────────────────────────────────────────
 def parse_sku(sku: str) -> list[dict]:
-    """Parse 'A+Bx6+Cx2' → [{'base':'A','mult':1},{'base':'B','mult':6},{'base':'C','mult':2}]"""
+    """Parse 'A+Bx6+Cx2' → [{'base':'A','mult':1},{'base':'B','mult':6},{'base':'C','mult':2}]
+    Handles both lowercase x and uppercase X as multiplier separator.
+    """
     components = []
     for part in str(sku).split("+"):
-        m = re.match(r"^(\w+)(?:x(\d+))?$", part.strip())
+        m = re.match(r"^(\d+?)(?:[xX](\d+))?$", part.strip())
         if m:
             components.append({"base": m.group(1), "mult": int(m.group(2)) if m.group(2) else 1})
     return components
@@ -262,12 +264,19 @@ def compute_rows(promos: list[dict], stock_map: dict) -> pd.DataFrame:
     df["total_demand"] = df["total_demand"].fillna(0).astype(int)
 
     # ── Gap and OOS based on aggregated demand vs shared stock ─────────────
-    df["gap"]     = df.apply(lambda r: int(r["stock"] - r["total_demand"]) if r["stock_lock"] else None, axis=1)
-    df["oos"]     = df.apply(lambda r: bool(r["stock_lock"] and r["gap"] is not None and r["gap"] < 0), axis=1)
-    df["restock"] = df.apply(lambda r: abs(r["gap"]) if r["oos"] else 0, axis=1)
+    # Use pd.NA for unlocked rows so the column stays integer-compatible
+    df["gap"]     = df.apply(
+        lambda r: int(r["stock"] - r["total_demand"]) if r["stock_lock"] else pd.NA, axis=1
+    )
+    df["oos"]     = df.apply(
+        lambda r: bool(r["stock_lock"] and pd.notna(r["gap"]) and r["gap"] < 0), axis=1
+    )
+    df["restock"] = df.apply(
+        lambda r: int(abs(r["gap"])) if r["oos"] else 0, axis=1
+    )
     df["status"]  = df.apply(lambda r:
         "OOS"     if r["oos"] else
-        "Watch"   if (r["stock_lock"] and r["gap"] is not None and r["gap"] < 20) else
+        "Watch"   if (r["stock_lock"] and pd.notna(r["gap"]) and r["gap"] < 20) else
         "Safe"    if r["stock_lock"] else
         "No lock", axis=1)
 
@@ -746,6 +755,11 @@ with st.sidebar:
         try:
             promos, stock_map = parse_upload(uploaded)
             st.success(f"✓ {uploaded.name}  ·  {len(promos)} rows loaded")
+            # On first upload (or new file), reset date range to today
+            if st.session_state.get("last_uploaded") != uploaded.name:
+                st.session_state["last_uploaded"] = uploaded.name
+                st.session_state["d_from"] = TODAY
+                st.session_state["d_to"]   = TODAY
         except Exception as e:
             st.error(f"Parse error: {e}")
             promos, stock_map = [], {}
@@ -759,13 +773,15 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ── Date range ────────────────────────────────────────────────────────────
+    # ── Date range — defaults to today on upload, user-adjustable after ───────
     st.markdown('<div class="section-hdr">Date range</div>', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
     with col1:
-        d_from = st.date_input("From", value=TODAY - timedelta(days=9), label_visibility="collapsed")
+        d_from = st.date_input("From", value=st.session_state.get("d_from", TODAY),
+                               key="d_from", label_visibility="collapsed")
     with col2:
-        d_to   = st.date_input("To",   value=TODAY + timedelta(days=16), label_visibility="collapsed")
+        d_to   = st.date_input("To",   value=st.session_state.get("d_to",   TODAY),
+                               key="d_to",   label_visibility="collapsed")
     st.caption(f"From {d_from.strftime('%d %b')} → {d_to.strftime('%d %b %Y')}")
 
     st.markdown("---")
@@ -859,11 +875,13 @@ if not promos:
     st.stop()
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
-locked_rows = df_rows[df_rows["stock_lock"]] if not df_rows.empty else pd.DataFrame()
-n_scopes    = locked_rows["scope_key"].nunique()     if not locked_rows.empty else 0
-n_oos       = locked_rows[locked_rows["oos"]]["scope_key"].nunique() if not locked_rows.empty else 0
+locked_rows  = df_rows[df_rows["stock_lock"]] if not df_rows.empty else pd.DataFrame()
+# Deduplicate by scope_key for metric counts — one scope = one country+seller+base_sku bucket
+unique_scopes     = locked_rows.drop_duplicates("scope_key") if not locked_rows.empty else pd.DataFrame()
+n_scopes    = unique_scopes["scope_key"].nunique()                              if not unique_scopes.empty else 0
+n_oos       = unique_scopes[unique_scopes["oos"]]["scope_key"].nunique()        if not unique_scopes.empty else 0
 n_conf      = len(df_conf)
-n_restock   = int(locked_rows[locked_rows["oos"]]["restock"].sum()) if not locked_rows.empty else 0
+n_restock   = int(unique_scopes[unique_scopes["oos"]]["restock"].sum())         if not unique_scopes.empty else 0
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Stock scopes",      n_scopes)
@@ -889,7 +907,9 @@ else:
     display_df["demand_disp"]    = display_df.apply(lambda r: r["demand"]       if r["stock_lock"] else "—", axis=1)
     display_df["total_res_disp"] = display_df.apply(lambda r: r["total_res"]    if r["stock_lock"] else "—", axis=1)
     display_df["total_dem_disp"] = display_df.apply(lambda r: r["total_demand"] if r["stock_lock"] else "—", axis=1)
-    display_df["gap_disp"]       = display_df.apply(lambda r: r["gap"]          if r["gap"] is not None else "—", axis=1)
+    display_df["gap_disp"]       = display_df.apply(
+        lambda r: int(r["gap"]) if pd.notna(r["gap"]) else "—", axis=1
+    )
 
     show_cols = {
         "scope_label":    "Scope (Seller · Country · Base SKU)",
