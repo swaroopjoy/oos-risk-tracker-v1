@@ -5,8 +5,6 @@ from io import BytesIO
 from datetime import date, timedelta, datetime
 import re
 import xlsxwriter
-import base64
-from pathlib import Path
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -23,253 +21,13 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=DM+Sans:wght@400;500&family=DM+Mono:wght@400;500&display=swap');
-
-/* ── Light mode base ── */
-:root {
-    --sentinel-navy:   #0A1628;
-    --sentinel-navy2:  #0D2244;
-    --sentinel-cyan:   #00B4D8;
-    --sentinel-cyan2:  #0096C7;
-    --sentinel-cyan3:  #90E0EF;
-    --sentinel-bg:     #F0F4FA;
-    --sentinel-surface:#FFFFFF;
-    --sentinel-border: #C8D6E5;
-    --sentinel-text:   #0A1628;
-    --sentinel-text2:  #3A5068;
-    --sentinel-text3:  #7A95B0;
-    --sentinel-red:    #E63946;
-    --sentinel-red-bg: #FEF0F1;
-    --sentinel-amber:  #F4A261;
-    --sentinel-amb-bg: #FEF6EE;
-    --sentinel-green:  #2D9B6F;
-    --sentinel-grn-bg: #EDF7F3;
-    --sentinel-metric-bg: #FFFFFF;
-    --sentinel-metric-border: #C8D6E5;
-}
-
-/* ── Dark mode overrides ── */
-@media (prefers-color-scheme: dark) {
-    :root {
-        --sentinel-bg:     #060D1A;
-        --sentinel-surface:#0D1E35;
-        --sentinel-border: #1A3050;
-        --sentinel-text:   #E8F0F8;
-        --sentinel-text2:  #90AFD0;
-        --sentinel-text3:  #4A7090;
-        --sentinel-red-bg: #2A0A0C;
-        --sentinel-amb-bg: #2A1A08;
-        --sentinel-grn-bg: #092014;
-        --sentinel-metric-bg: #0D1E35;
-        --sentinel-metric-border: #1A3050;
-    }
-}
-
-html, body, [class*="css"] {
-    font-family: 'DM Sans', sans-serif;
-    background: var(--sentinel-bg) !important;
-    color: var(--sentinel-text) !important;
-}
-
-/* ── Sidebar ── */
-section[data-testid="stSidebar"] {
-    background: var(--sentinel-navy) !important;
-    border-right: 1px solid #1A3456;
-}
-section[data-testid="stSidebar"] * { color: #C8D8EC !important; }
-section[data-testid="stSidebar"] .block-container { padding: 1rem 0.75rem; }
-section[data-testid="stSidebar"] input,
-section[data-testid="stSidebar"] select {
-    background: #0D2244 !important;
-    border: 1px solid #1A3456 !important;
-    color: #E8F0F8 !important;
-    border-radius: 6px !important;
-}
-section[data-testid="stSidebar"] button {
-    border: 1px solid var(--sentinel-cyan2) !important;
-    color: var(--sentinel-cyan) !important;
-    background: transparent !important;
-    border-radius: 6px !important;
-}
-section[data-testid="stSidebar"] button:hover {
-    background: rgba(0,180,216,0.1) !important;
-}
-section[data-testid="stSidebar"] .stMultiSelect [data-baseweb="select"] {
-    background: #0D2244 !important; border-color: #1A3456 !important;
-}
-section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
-    color: #7A9EC0 !important; font-size: 11px;
-}
-section[data-testid="stSidebar"] label { color: #7A9EC0 !important; }
-
-/* ── Main content ── */
+/* Minimal clean overrides only */
 .main .block-container { padding: 1.5rem 2rem; max-width: 100%; }
-.stApp { background: var(--sentinel-bg) !important; }
-
-/* ── Metric cards ── */
-[data-testid="metric-container"] {
-    background: var(--sentinel-metric-bg) !important;
-    border: 1px solid var(--sentinel-metric-border) !important;
-    border-radius: 10px !important;
-    border-top: 3px solid var(--sentinel-cyan) !important;
-    padding: 1rem !important;
-}
-[data-testid="metric-container"] label {
-    color: var(--sentinel-text3) !important; font-size: 11px !important;
-    text-transform: uppercase; letter-spacing: .06em;
-}
-[data-testid="metric-container"] [data-testid="metric-value"] {
-    font-family: 'Rajdhani', sans-serif !important;
-    font-size: 28px !important; font-weight: 600 !important;
-    color: var(--sentinel-cyan) !important;
-}
-
-/* ── Sentinel brand header ── */
-.sentinel-header {
-    display: flex; align-items: center; gap: 14px;
-    padding: 16px 0 18px;
-    border-bottom: 1px solid var(--sentinel-border);
-    margin-bottom: 16px;
-}
-.sentinel-logo-text {
-    font-family: 'Rajdhani', sans-serif;
-    font-size: 28px; font-weight: 700;
-    color: var(--sentinel-navy);
-    letter-spacing: .04em;
-    line-height: 1;
-}
-.sentinel-logo-text span { color: var(--sentinel-cyan); }
-.sentinel-tagline {
-    font-size: 12px; color: var(--sentinel-text3);
-    margin-top: 2px; letter-spacing: .02em;
-}
-@media (prefers-color-scheme: dark) {
-    .sentinel-logo-text { color: #E8F0F8; }
-}
-
-/* ── Info bars ── */
-.info-blue {
-    background: rgba(0,180,216,0.08); border: 1px solid rgba(0,180,216,0.3);
-    color: var(--sentinel-cyan2); border-radius: 8px;
-    padding: 9px 13px; font-size: 12px; margin-bottom: 8px;
-}
-.info-purple {
-    background: rgba(123,45,139,0.08); border: 1px solid rgba(123,45,139,0.3);
-    color: #9B59B6; border-radius: 8px;
-    padding: 9px 13px; font-size: 12px; margin-bottom: 8px;
-}
-
-/* ── Section headers ── */
-.section-hdr {
-    font-family: 'Rajdhani', sans-serif;
-    font-size: 12px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: .1em;
-    color: var(--sentinel-cyan); margin: 14px 0 6px;
-    border-bottom: 1px solid rgba(0,180,216,0.2);
-    padding-bottom: 4px;
-}
-
-/* ── Scope pill ── */
-.scope-pill {
-    display: inline-block; font-family: 'DM Mono', monospace;
-    font-size: 10px; padding: 2px 7px; border-radius: 4px;
-    background: rgba(0,180,216,0.1); color: var(--sentinel-cyan2);
-    border: 1px solid rgba(0,180,216,0.25);
-}
-
-/* ── Restock labels ── */
-.rs-label-hard {
-    font-family: 'Rajdhani', sans-serif;
-    font-size: 12px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: .07em; color: var(--sentinel-red);
-    margin: 14px 0 6px; border-bottom: 1px solid rgba(230,57,70,0.3);
-    padding-bottom: 4px;
-}
-.rs-label-soft {
-    font-family: 'Rajdhani', sans-serif;
-    font-size: 12px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: .07em; color: var(--sentinel-amber);
-    margin: 14px 0 6px; border-bottom: 1px solid rgba(244,162,97,0.3);
-    padding-bottom: 4px;
-}
-
-/* ── Sidebar brand ── */
-.sidebar-brand {
-    font-family: 'Rajdhani', sans-serif;
-    font-size: 20px; font-weight: 700; color: #E8F0F8;
-    letter-spacing: .06em; line-height: 1;
-    padding-bottom: 12px; border-bottom: 1px solid #1A3456;
-    margin-bottom: 4px;
-}
-.sidebar-brand span { color: var(--sentinel-cyan); }
-.sidebar-tagline { font-size: 10px; color: #4A7090 !important; margin-top: 4px; }
-
-/* ── Download button ── */
-.stDownloadButton button {
-    background: linear-gradient(135deg, #0A1628, #0D2244) !important;
-    color: var(--sentinel-cyan) !important;
-    border: 1px solid var(--sentinel-cyan2) !important;
-    border-radius: 8px !important; font-weight: 500 !important;
-    letter-spacing: .03em;
-}
-.stDownloadButton button:hover {
-    background: var(--sentinel-cyan2) !important;
-    color: white !important;
-}
-
-/* ── Primary button ── */
-.stButton > button[kind="primary"] {
-    background: var(--sentinel-cyan2) !important;
-    color: white !important;
-    border: none !important; border-radius: 8px !important;
-    font-weight: 500 !important;
-}
-
-/* ── Dataframe ── */
-[data-testid="stDataFrame"] {
-    border: 1px solid var(--sentinel-border) !important;
-    border-radius: 10px !important; overflow: hidden;
-}
-
-/* ── Expander ── */
-details { border: 1px solid var(--sentinel-border) !important; border-radius: 8px !important; }
-
-/* ── Radio buttons ── */
-.stRadio label { font-size: 12px !important; }
-
 #MainMenu, footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
 TODAY = date.today()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LOGO — base64-encoded for both light and dark mode
-# ─────────────────────────────────────────────────────────────────────────────
-def _b64(path: str) -> str:
-    try:
-        return base64.b64encode(Path(path).read_bytes()).decode()
-    except Exception:
-        return ""
-
-_here = Path(__file__).parent
-_logo_light = _b64(str(_here / "logo_light.png"))
-_logo_dark  = _b64(str(_here / "logo_dark.png"))
-
-# Adaptive logo HTML: shows light logo in light mode, dark logo in dark mode
-def logo_html(size: int = 52) -> str:
-    if _logo_light and _logo_dark:
-        return f"""
-        <picture>
-          <source media="(prefers-color-scheme: dark)"
-                  srcset="data:image/png;base64,{_logo_dark}">
-          <img src="data:image/png;base64,{_logo_light}"
-               width="{size}" height="{size}"
-               style="border-radius:12px;flex-shrink:0"
-               alt="OOS Sentinel logo">
-        </picture>"""
-    return "<span style='font-size:32px'>🛡️</span>"
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SKU PARSING
@@ -870,9 +628,9 @@ def render_heatmap(hm_df: pd.DataFrame, mode: str):
         <div title="{row['scope_keys']}" style="width:68px;height:76px;border-radius:8px;
             background:{bg};{today_border}display:flex;flex-direction:column;
             align-items:center;justify-content:center;cursor:default;gap:1px;">
-          <span style="font-size:10px;font-weight:600;color:{tc};font-family:'Rajdhani',sans-serif">{row['day_label']}</span>
+          <span style="font-size:10px;font-weight:600;color:{tc};">{row['day_label']}</span>
           <span style="font-size:9px;color:{tc};opacity:.75">{row['date_str']}</span>
-          <span style="font-size:15px;font-weight:600;color:{tc};margin-top:2px;font-family:'Rajdhani',sans-serif">{disp}</span>
+          <span style="font-size:15px;font-weight:600;color:{tc};margin-top:2px;">{disp}</span>
           <span style="font-size:9px;color:{tc};opacity:.65">{int(row['active_scopes'])} scope{'s' if row['active_scopes']!=1 else ''}</span>
         </div>"""
     cards_html += "</div>"
@@ -895,7 +653,7 @@ def render_restock(df_rows: pd.DataFrame):
         return
 
     # ── Hard OOS ─────────────────────────────────────────────────────────────
-    st.markdown('<div class="rs-label-hard">🔒 Hard OOS — locked stock only</div>', unsafe_allow_html=True)
+    st.markdown("**🔒 Hard OOS — locked stock only**")
     # One entry per scope (de-duplicated — gap/restock are the same for all rows in a scope)
     hard_by_scope = {}
     for _, r in df_rows[df_rows["oos"]].iterrows():
@@ -922,7 +680,7 @@ def render_restock(df_rows: pd.DataFrame):
             </div>""", unsafe_allow_html=True)
 
     # ── Soft Risk ─────────────────────────────────────────────────────────────
-    st.markdown('<div class="rs-label-soft">⚠️ Soft risk — locked + nominated combined</div>', unsafe_allow_html=True)
+    st.markdown("**⚠️ Soft risk — locked + nominated combined**")
     scope_agg = {}
     for _, r in df_rows.iterrows():
         k = r["scope_key"]
@@ -960,17 +718,9 @@ def render_restock(df_rows: pd.DataFrame):
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    # ── Brand ────────────────────────────────────────────────────────────────
-    st.markdown(f"""
-    <div style="display:flex;align-items:center;gap:10px;padding-bottom:14px;border-bottom:1px solid #1A3456;margin-bottom:4px">
-      {logo_html(44)}
-      <div>
-        <div class="sidebar-brand">OOS <span>SENTINEL</span></div>
-        <div class="sidebar-tagline">Stock risk intelligence platform</div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("---")
+    st.markdown("### 🛡️ OOS Sentinel")
+    st.caption("Stock risk intelligence platform")
+    st.divider()
 
     # ── Data source ───────────────────────────────────────────────────────────
     st.markdown('<div class="section-hdr">Data source</div>', unsafe_allow_html=True)
@@ -1089,43 +839,22 @@ hm_df   = compute_heatmap(df_rows, TODAY)
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN CONTENT
 # ─────────────────────────────────────────────────────────────────────────────
-st.markdown(f"""
-<div class="sentinel-header">
-  {logo_html(56)}
-  <div>
-    <div class="sentinel-logo-text">OOS <span>SENTINEL</span></div>
-    <div class="sentinel-tagline">Stock risk intelligence · scoped per Seller + Country · demand & OOS for Stock lock = Yes only</div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+st.markdown("## 🛡️ OOS Sentinel")
+st.caption("Stock scoped per **Seller + Country** — same SKU in different countries is treated as separate stock. "
+           "Demand & OOS calculated only for **Stock lock = Yes** rows.")
 
 # ── No file uploaded yet — show welcome screen ────────────────────────────────
 if not promos:
-    st.markdown(f"""
-    <div style="margin-top:48px;text-align:center;padding:56px 32px;
-         background:var(--sentinel-surface);border:1px dashed rgba(0,180,216,0.4);
-         border-radius:16px">
-        <div style="display:flex;justify-content:center;margin-bottom:16px">
-          {logo_html(80)}
-        </div>
-        <div style="font-family:'Rajdhani',sans-serif;font-size:28px;font-weight:700;
-             color:var(--sentinel-text);letter-spacing:.06em;margin-bottom:6px">
-            OOS <span style="color:var(--sentinel-cyan)">SENTINEL</span>
-        </div>
-        <div style="font-size:13px;color:var(--sentinel-text3);margin-bottom:28px">
-            Upload your Stock Reservation Tracker sheet to begin analysis.<br>
-            Or download the input template from the sidebar to get started.
-        </div>
-        <div style="font-size:12px;background:rgba(0,180,216,0.06);border:1px solid rgba(0,180,216,0.2);
-             border-radius:10px;padding:14px 20px;display:inline-block;text-align:left;
-             color:var(--sentinel-text2);line-height:2;font-family:'DM Mono',monospace">
-            Required columns: Seller code · Country · Brand · Channel · SKU ·<br>
-            Campaign / Promotion Name · Campaign Type · Stock Lock / Reserved ·<br>
-            Promo Start Date · Promo End Date · Today's Stock for Base SKU ·<br>
-            Total Reserved Across All Campaigns
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown("### 📂 No data loaded yet")
+    st.info("Upload your Stock Reservation Tracker sheet using the sidebar to begin analysis.")
+    st.markdown("""
+    **Required columns:**
+    `Seller Code` · `Country` · `Brand` · `Channel` · `SKU` ·
+    `Campaign / Promotion Name` · `Campaign Type` · `Stock Locked / Reserved` ·
+    `Promo Start Date` · `Promo End Date` · `Stock for Base SKU` ·
+    `Total Reserved - All Campaigns`
+    """)
     st.stop()
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
@@ -1142,11 +871,11 @@ c3.metric("Promo conflicts",   n_conf,   delta=f"{n_conf} conflicts" if n_conf e
 c4.metric("Total restock needed", n_restock)
 
 # ── Info bars ─────────────────────────────────────────────────────────────────
-st.markdown('<div class="info-blue">ℹ️ Demand and OOS are calculated <b>only</b> for Stock lock = Yes rows. Unlocked rows shown for reference only.</div>', unsafe_allow_html=True)
-st.markdown('<div class="info-purple">📍 Stock is partitioned by <b>Seller + Country + Base SKU</b>. The same SKU for the same seller in TH and MY is calculated independently.</div>', unsafe_allow_html=True)
+st.info("ℹ️ Demand and OOS calculated **only** for Stock lock = Yes rows. Unlocked rows shown for reference only.")
+st.warning("📍 Stock partitioned by **Seller + Country + Base SKU**. Same SKU in TH and MY is calculated independently.")
 
 # ── SKU breakdown table ───────────────────────────────────────────────────────
-st.markdown('<div style="font-family:Rajdhani,sans-serif;font-size:20px;font-weight:600;color:#00B4D8;letter-spacing:.04em;margin:8px 0 4px">Base SKU breakdown</div>', unsafe_allow_html=True)
+st.markdown('### Base SKU breakdown')
 st.caption("Sorted by Seller · Country · Base SKU · locked rows highlighted")
 
 if df_rows.empty:
@@ -1192,7 +921,7 @@ else:
     st.dataframe(styled, use_container_width=True, hide_index=True, height=min(40 + 35*len(tbl), 500))
 
 # ── Conflicts table ───────────────────────────────────────────────────────────
-st.markdown('<div style="font-family:Rajdhani,sans-serif;font-size:20px;font-weight:600;color:#00B4D8;letter-spacing:.04em;margin:8px 0 4px">Conflicting promotions — by Seller · Country · Base SKU</div>', unsafe_allow_html=True)
+st.markdown('### Conflicting promotions — by Seller · Country · Base SKU')
 st.caption("Only locked promotions within same seller+country scope flagged as conflicts")
 
 if df_conf.empty:
@@ -1217,7 +946,7 @@ else:
     st.dataframe(styled_conf, use_container_width=True, hide_index=True)
 
 # ── Heatmap ───────────────────────────────────────────────────────────────────
-st.markdown('<div style="font-family:Rajdhani,sans-serif;font-size:20px;font-weight:600;color:#00B4D8;letter-spacing:.04em;margin:8px 0 4px">OOS risk calendar — D-3 to D+7</div>', unsafe_allow_html=True)
+st.markdown('### OOS risk calendar — D-3 to D+7')
 st.caption("Locked promotions only · today = D · hover for scope details")
 
 hm_mode = st.radio("Intensity", ["Demand ratio %","Promo count","Units at risk"],
@@ -1233,13 +962,13 @@ with st.expander("📋 View heatmap as table"):
     st.dataframe(styled_hm, use_container_width=True, hide_index=True)
 
 # ── Restock ────────────────────────────────────────────────────────────────────
-st.markdown('<div style="font-family:Rajdhani,sans-serif;font-size:20px;font-weight:600;color:#00B4D8;letter-spacing:.04em;margin:8px 0 4px">Restock recommendations</div>', unsafe_allow_html=True)
+st.markdown('### Restock recommendations')
 st.caption("Per Seller · Country · Base SKU scope · locked and combined (locked + nominated) views")
 render_restock(df_rows if not df_rows.empty else pd.DataFrame())
 
 # ── Export ────────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown('<div style="font-family:Rajdhani,sans-serif;font-size:18px;font-weight:600;color:var(--sentinel-cyan);letter-spacing:.04em;margin-bottom:8px">Export report</div>', unsafe_allow_html=True)
+st.markdown('### Export report')
 export_bytes = build_excel(df_rows if not df_rows.empty else pd.DataFrame(),
                             df_conf if not df_conf.empty else pd.DataFrame(),
                             hm_df)
