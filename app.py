@@ -243,6 +243,33 @@ details { border: 1px solid var(--sentinel-border) !important; border-radius: 8p
 
 TODAY = date.today()
 
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGO — base64-encoded for both light and dark mode
+# ─────────────────────────────────────────────────────────────────────────────
+def _b64(path: str) -> str:
+    try:
+        return base64.b64encode(Path(path).read_bytes()).decode()
+    except Exception:
+        return ""
+
+_here = Path(__file__).parent
+_logo_light = _b64(str(_here / "logo_light.png"))
+_logo_dark  = _b64(str(_here / "logo_dark.png"))
+
+# Adaptive logo HTML: shows light logo in light mode, dark logo in dark mode
+def logo_html(size: int = 52) -> str:
+    if _logo_light and _logo_dark:
+        return f"""
+        <picture>
+          <source media="(prefers-color-scheme: dark)"
+                  srcset="data:image/png;base64,{_logo_dark}">
+          <img src="data:image/png;base64,{_logo_light}"
+               width="{size}" height="{size}"
+               style="border-radius:12px;flex-shrink:0"
+               alt="OOS Sentinel logo">
+        </picture>"""
+    return "<span style='font-size:32px'>🛡️</span>"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SKU PARSING
@@ -286,21 +313,27 @@ def parse_upload(file) -> tuple[list[dict], dict]:
 
     # ── Column name aliases (title-based, never positional) ────────────────
     COL = {
-        "seller":    ["Seller code","Seller Code","Seller"],
+        "seller":    ["Seller Code","Seller code","Seller"],
         "country":   ["Country"],
         "brand":     ["Brand"],
         "channel":   ["Channel"],
         "sku":       ["SKU","Promo SKU","sku"],
         "campaign":  ["Campaign / Promotion Name","Campaign Name"],
         "type":      ["Campaign Type","Campaign type"],
-        "lock":      ["Stock Lock / Reserved","Stock Lock","Stock lock"],
+        "lock":      ["Stock Locked / Reserved",   # ← "Locked" with d
+                      "Stock Lock / Reserved",
+                      "Stock Lock","Stock lock"],
         "start":     ["Promo Start Date","Start Date"],
         "end":       ["Promo End Date","End Date"],
-        "stock":     ["Today's Stock for Base SKU - (24 may)",
-                      "Today's Stock for Base SKU","Today's Stock","Stock"],
-        "total_res": ["Total Reserved Across All Campaigns",
+        "stock":     ["Stock for Base SKU",                          # ← new name
+                      "Today's Stock for Base SKU - (24 may)",
+                      "Today's Stock for Base SKU",
+                      "Today's Stock","Stock"],
+        "total_res": ["Total Reserved - All Campaigns",              # ← new name
+                      "Total Reserved Across All Campaigns",
                       "Total Reserved","total_reserved"],
-        "nominated": ["Nominated stock (Non Reservation)","Nominated Stock","Nominated stock"],
+        "nominated": ["Nominated stock (Non Reservation)",
+                      "Nominated Stock","Nominated stock"],
     }
 
     def find_col(key):
@@ -364,32 +397,34 @@ def parse_upload(file) -> tuple[list[dict], dict]:
             stock_lock = lock_val in ("yes","true","1","y")
 
             stock     = gn(row, "stock")
-            total_res = gn(row, "total_res")   # use the total column
+            total_res = gn(row, "total_res")
             nominated = gn(row, "nominated")
 
             components = parse_sku(raw_sku)
 
-            # Stock for first component — shared per country+base_sku
-            if components:
-                sk = scope_key(seller, country, components[0]["base"])
-                stock_map[sk] = int(stock)   # always update (latest row wins)
+            # Store stock for ALL components in stock_map using this row's stock value
+            # (stock column always refers to the base SKU stock shared per country)
+            for comp in components:
+                sk = scope_key(seller, country, comp["base"])
+                stock_map[sk] = int(stock)
 
-            pending_comps = list(components[1:])  # remaining components
+            pending_comps = []  # no continuation rows expected for single-row format
 
             last = dict(seller=seller, country=country, brand=brand, channel=channel,
                         campaign=campaign, type=typ, start=start, end=end,
                         stock_lock=stock_lock, sku=raw_sku)
 
-            # Emit one record per component of this promo SKU
+            # Emit one record per component — total_res is the same for all
+            # (it represents orders placed for the promo SKU as a whole)
             for comp in components:
                 records.append(dict(
                     seller=seller, country=country, brand=brand, channel=channel,
                     sku=raw_sku, base_sku=comp["base"], mult=comp["mult"],
                     campaign=campaign, type=typ, start=start, end=end,
                     stock_lock=stock_lock,
-                    total_res=total_res,   # same total for all components
+                    total_res=total_res,
                     nominated=nominated,
-                    _stock_raw=int(stock), # will be replaced from stock_map later
+                    _stock_raw=int(stock),
                 ))
 
         elif is_cont and pending_comps:
@@ -926,9 +961,14 @@ def render_restock(df_rows: pd.DataFrame):
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     # ── Brand ────────────────────────────────────────────────────────────────
-    st.markdown("""
-    <div class="sidebar-brand">OOS <span>SENTINEL</span></div>
-    <div class="sidebar-tagline">Stock risk intelligence platform</div>
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;gap:10px;padding-bottom:14px;border-bottom:1px solid #1A3456;margin-bottom:4px">
+      {logo_html(44)}
+      <div>
+        <div class="sidebar-brand">OOS <span>SENTINEL</span></div>
+        <div class="sidebar-tagline">Stock risk intelligence platform</div>
+      </div>
+    </div>
     """, unsafe_allow_html=True)
     st.markdown("---")
 
@@ -1049,8 +1089,9 @@ hm_df   = compute_heatmap(df_rows, TODAY)
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN CONTENT
 # ─────────────────────────────────────────────────────────────────────────────
-st.markdown("""
+st.markdown(f"""
 <div class="sentinel-header">
+  {logo_html(56)}
   <div>
     <div class="sentinel-logo-text">OOS <span>SENTINEL</span></div>
     <div class="sentinel-tagline">Stock risk intelligence · scoped per Seller + Country · demand & OOS for Stock lock = Yes only</div>
@@ -1060,16 +1101,18 @@ st.markdown("""
 
 # ── No file uploaded yet — show welcome screen ────────────────────────────────
 if not promos:
-    st.markdown("""
+    st.markdown(f"""
     <div style="margin-top:48px;text-align:center;padding:56px 32px;
          background:var(--sentinel-surface);border:1px dashed rgba(0,180,216,0.4);
          border-radius:16px">
-        <div style="font-size:52px;margin-bottom:16px">🛡️</div>
-        <div style="font-family:'Rajdhani',sans-serif;font-size:24px;font-weight:600;
-             color:var(--sentinel-text);letter-spacing:.04em;margin-bottom:8px">
-            OOS SENTINEL
+        <div style="display:flex;justify-content:center;margin-bottom:16px">
+          {logo_html(80)}
         </div>
-        <div style="font-size:14px;color:var(--sentinel-text3);margin-bottom:28px">
+        <div style="font-family:'Rajdhani',sans-serif;font-size:28px;font-weight:700;
+             color:var(--sentinel-text);letter-spacing:.06em;margin-bottom:6px">
+            OOS <span style="color:var(--sentinel-cyan)">SENTINEL</span>
+        </div>
+        <div style="font-size:13px;color:var(--sentinel-text3);margin-bottom:28px">
             Upload your Stock Reservation Tracker sheet to begin analysis.<br>
             Or download the input template from the sidebar to get started.
         </div>
