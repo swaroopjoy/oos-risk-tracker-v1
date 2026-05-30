@@ -50,62 +50,112 @@ def scope_key(seller, country, base_sku):
 # ─────────────────────────────────────────────────────────────────────────────
 # XLSX UPLOAD PARSER
 # ─────────────────────────────────────────────────────────────────────────────
+def _detect_header_row(file) -> int:
+    """
+    Detect which row contains the actual data column headers.
+    The template has 4 decorative rows before headers.
+    We find the row that contains at least 3 of the known key column names.
+    """
+    KEY_COLS = {"SKU", "Brand", "Channel", "Country", "Seller Code",
+                "Stock Locked / Reserved", "Total Reserved - All Campaigns",
+                "Stock for Base SKU", "Campaign / Promotion Name", "Base SKU"}
+    for header_row in range(0, 8):
+        try:
+            df = pd.read_excel(file, sheet_name=0, dtype=str, header=header_row, nrows=0)
+            cols = {c.strip() for c in df.columns}
+            if len(cols & KEY_COLS) >= 3:
+                return header_row
+        except Exception:
+            continue
+    return 0  # fallback
+
+
+def validate_stock(promos: list[dict], stock_map: dict) -> list[str]:
+    """
+    Check every locked promo's scope_key exists in stock_map with a value > 0.
+    Returns a list of missing scope descriptions (empty = all good).
+    """
+    missing = []
+    seen = set()
+    for p in promos:
+        if not p.get("stock_lock"):
+            continue
+        sk = scope_key(p["seller"], p["country"], p["base_sku"])
+        if sk in seen:
+            continue
+        seen.add(sk)
+        if stock_map.get(sk, 0) == 0:
+            missing.append(
+                f"**{p['seller']} · {p['country']} · {p['base_sku']}** "
+                f"(Promo SKU: {p['sku']})"
+            )
+    return missing
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 def parse_upload(file) -> tuple[list[dict], dict]:
     """
     Parse the reservation tracker sheet.
 
     Key rules:
+    - Auto-detects header row (handles OOS Sentinel template with 4 decorative rows).
     - Column lookup is always by TITLE, never by position.
-    - Stock Lock is read from the 'Stock Lock / Reserved' column on the MAIN row
-      and inherited by continuation rows (which have NaN in that column).
-    - Total reservation = 'Total Reserved Across All Campaigns' column (not sum
-      of individual columns, which would double-count).
-    - Stock is stored per country + base_sku and SHARED across all promos in
-      that country — same physical warehouse.
-    - Continuation rows (blank SKU, blank seller) supply stock + reservations
+    - Base SKU column is read directly when present; otherwise derived from SKU string.
+    - Stock Lock is read from the lock column; inherited by continuation rows.
+    - Total reservation = 'Total Reserved - All Campaigns' column.
+    - Stock is stored per seller+country+base_sku and SHARED across all promos
+      in that country for the same seller.
+    - Continuation rows (blank SKU, blank seller) supply stock/reservations
       for the next component of the combo SKU above them.
 
     Returns:
         promos    — list of promo component dicts ready for compute_rows
-        stock_map — {scope_key: stock} where scope = "seller|country|base_sku"
+        stock_map — {scope_key: stock} keyed "seller|country|base_sku"
     """
-    df = pd.read_excel(file, sheet_name=0, dtype=str)
+    header_row = _detect_header_row(file)
+    df = pd.read_excel(file, sheet_name=0, dtype=str, header=header_row)
     df.columns = [c.strip() for c in df.columns]
+    # Drop completely empty rows
+    df = df.dropna(how="all")
 
     # ── Column name aliases (title-based, never positional) ────────────────
     COL = {
-        "seller":    ["Seller Code","Seller code","Seller"],
-        "country":   ["Country"],
+        "seller":    ["Seller Code", "Seller code", "Seller"],
+        "country":   ["Country", "Country (SG/MY/TH)"],
         "brand":     ["Brand"],
         "channel":   ["Channel"],
-        "sku":       ["SKU","Promo SKU","sku"],
-        "campaign":  ["Campaign / Promotion Name","Campaign Name"],
-        "type":      ["Campaign Type","Campaign type"],
-        "lock":      ["Stock Locked / Reserved",   # ← "Locked" with d
+        "sku":       ["SKU", "Promo SKU", "sku"],
+        "base_sku":  ["Base SKU", "Base Sku", "base_sku"],          # ← NEW
+        "campaign":  ["Campaign / Promotion Name", "Campaign Name"],
+        "type":      ["Campaign Type", "Campaign type"],
+        "lock":      ["Stock Locked / Reserved",
                       "Stock Lock / Reserved",
-                      "Stock Lock","Stock lock"],
-        "start":     ["Promo Start Date","Start Date"],
-        "end":       ["Promo End Date","End Date"],
-        "stock":     ["Stock for Base SKU",                          # ← new name
+                      "Stock Lock", "Stock lock"],
+        "start":     ["Promo Start Date", "Promo Start Date ",
+                      "Start Date"],
+        "end":       ["Promo End Date", "End Date"],
+        "stock":     ["Stock for Base SKU",
                       "Today's Stock for Base SKU - (24 may)",
                       "Today's Stock for Base SKU",
-                      "Today's Stock","Stock"],
-        "total_res": ["Total Reserved - All Campaigns",              # ← new name
+                      "Today's Stock", "Stock"],
+        "total_res": ["Total Reserved - All Campaigns",
                       "Total Reserved Across All Campaigns",
-                      "Total Reserved","total_reserved"],
+                      "Total Reserved", "total_reserved"],
         "nominated": ["Nominated stock (Non Reservation)",
-                      "Nominated Stock","Nominated stock"],
+                      "Nominated Stock", "Nominated stock"],
+        "res_mp":    ["Reserved by Marketplace",                     # ← NEW alias
+                      "Reserved by MP"],
+        "res_dksh":  ["Reserved by DKSH"],
+        "res_graas": ["Reserved by Graas"],
     }
 
     def find_col(key):
-        """Return the actual column name in df for a logical key, or None."""
         for alias in COL.get(key, []):
             if alias in df.columns:
                 return alias
         return None
 
     def gv(row, key):
-        """Get clean string value from row by logical key. Returns None if blank/NaN."""
         col = find_col(key)
         if not col:
             return None
@@ -116,67 +166,79 @@ def parse_upload(file) -> tuple[list[dict], dict]:
         return None if s in ("", "nan", "None", "NaT", "NaN") else s
 
     def gn(row, key):
-        """Get numeric value from row by logical key. Returns 0 if missing."""
         v = gv(row, key)
         try:    return float(v) if v is not None else 0.0
         except: return 0.0
 
     def gdate(row, key, fallback=""):
         v = gv(row, key)
-        if not v: return fallback
+        if not v:
+            return fallback
         try:    return pd.to_datetime(v).strftime("%Y-%m-%d")
         except: return fallback
 
-    # ── Pass 1: parse all rows into structured records ────────────────────
-    # Each record = one base-SKU component of one promo event
-    records = []
-    stock_map = {}          # "seller|country|base_sku" → stock (shared per country)
-    last = {}               # last seen main-row metadata
-    pending_comps = []      # remaining components of current combo SKU
+    # ── Parse rows ────────────────────────────────────────────────────────
+    records   = []
+    stock_map = {}
+    last      = {}
+    pending_comps = []
 
     for _, row in df.iterrows():
-        raw_sku    = gv(row, "sku")
-        raw_seller = gv(row, "seller")
-        raw_lock   = gv(row, "lock")   # only non-null on main rows
-        raw_stock  = gv(row, "stock")
+        raw_sku      = gv(row, "sku")
+        raw_seller   = gv(row, "seller")
+        raw_lock     = gv(row, "lock")
+        raw_stock    = gv(row, "stock")
 
         is_main = bool(raw_sku and raw_seller)
         is_cont = bool(not raw_sku and not raw_seller and raw_stock and last)
 
         if is_main:
             seller   = raw_seller
-            country  = gv(row,"country")  or last.get("country","")
-            brand    = gv(row,"brand")    or last.get("brand","")
-            channel  = gv(row,"channel")  or last.get("channel","")
-            campaign = gv(row,"campaign") or last.get("campaign","")
-            typ      = gv(row,"type")     or last.get("type","")
-            start    = gdate(row,"start", last.get("start",""))
-            end      = gdate(row,"end",   last.get("end",""))
+            country  = gv(row, "country")  or last.get("country", "")
+            brand    = gv(row, "brand")    or last.get("brand", "")
+            channel  = gv(row, "channel")  or last.get("channel", "")
+            campaign = gv(row, "campaign") or last.get("campaign", "")
+            typ      = gv(row, "type")     or last.get("type", "")
+            start    = gdate(row, "start",  last.get("start", ""))
+            end      = gdate(row, "end",    last.get("end", ""))
 
-            # Lock: read from the lock column on this row only
             lock_val   = str(raw_lock or "").strip().lower()
-            stock_lock = lock_val in ("yes","true","1","y")
+            stock_lock = lock_val in ("yes", "true", "1", "y")
 
             stock     = gn(row, "stock")
             total_res = gn(row, "total_res")
             nominated = gn(row, "nominated")
 
-            components = parse_sku(raw_sku)
+            # ── Base SKU resolution ──────────────────────────────────────
+            # Priority: explicit Base SKU column → parse from SKU string
+            raw_base_sku_col = gv(row, "base_sku")
+            if raw_base_sku_col:
+                # Column present — derive multiplier by comparing to SKU string
+                components_from_sku = parse_sku(raw_sku)
+                # Map base SKUs from parsed components, override with column value
+                # For single-component SKUs the column IS the answer
+                components = []
+                for comp in components_from_sku:
+                    if comp["base"] == raw_base_sku_col.strip():
+                        components.append(comp)
+                # If no match found (e.g. combo), fall back to full parse
+                if not components:
+                    components = components_from_sku
+            else:
+                components = parse_sku(raw_sku)
 
-            # Store stock for ALL components in stock_map using this row's stock value
-            # (stock column always refers to the base SKU stock shared per country)
+            # Store stock for ALL components — shared per seller+country
             for comp in components:
                 sk = scope_key(seller, country, comp["base"])
-                stock_map[sk] = int(stock)
+                if stock > 0:   # only store if a real value was entered
+                    stock_map[sk] = int(stock)
 
-            pending_comps = []  # no continuation rows expected for single-row format
+            pending_comps = []
 
-            last = dict(seller=seller, country=country, brand=brand, channel=channel,
-                        campaign=campaign, type=typ, start=start, end=end,
-                        stock_lock=stock_lock, sku=raw_sku)
+            last = dict(seller=seller, country=country, brand=brand,
+                        channel=channel, campaign=campaign, type=typ,
+                        start=start, end=end, stock_lock=stock_lock, sku=raw_sku)
 
-            # Emit one record per component — total_res is the same for all
-            # (it represents orders placed for the promo SKU as a whole)
             for comp in components:
                 records.append(dict(
                     seller=seller, country=country, brand=brand, channel=channel,
@@ -189,17 +251,15 @@ def parse_upload(file) -> tuple[list[dict], dict]:
                 ))
 
         elif is_cont and pending_comps:
-            # Continuation row: stock + total_res for the NEXT pending component
-            comp      = pending_comps.pop(0)
+            comp       = pending_comps.pop(0)
             cont_stock = gn(row, "stock")
             cont_res   = gn(row, "total_res")
             cont_nom   = gn(row, "nominated")
 
             sk = scope_key(last["seller"], last["country"], comp["base"])
-            stock_map[sk] = int(cont_stock)
+            if cont_stock > 0:
+                stock_map[sk] = int(cont_stock)
 
-            # Update the matching record emitted from the main row above
-            # (find it by base_sku + campaign + sku)
             for rec in reversed(records):
                 if (rec["base_sku"] == comp["base"]
                         and rec["campaign"] == last["campaign"]
@@ -760,6 +820,8 @@ with st.sidebar:
                 st.session_state["last_uploaded"] = uploaded.name
                 st.session_state["d_from"] = TODAY
                 st.session_state["d_to"]   = TODAY
+            # Run stock validation — store missing scopes in session state
+            st.session_state["missing_stock"] = validate_stock(promos, stock_map)
         except Exception as e:
             st.error(f"Parse error: {e}")
             promos, stock_map = [], {}
@@ -860,18 +922,37 @@ st.markdown("## 🛡️ OOS Sentinel")
 st.caption("Stock scoped per **Seller + Country** — same SKU in different countries is treated as separate stock. "
            "Demand & OOS calculated only for **Stock lock = Yes** rows.")
 
-# ── No file uploaded yet — show welcome screen ────────────────────────────────
+# ── No file uploaded yet — show welcome screen ───────────────────────────────
 if not promos:
     st.markdown("---")
     st.markdown("### 📂 No data loaded yet")
     st.info("Upload your Stock Reservation Tracker sheet using the sidebar to begin analysis.")
     st.markdown("""
     **Required columns:**
-    `Seller Code` · `Country` · `Brand` · `Channel` · `SKU` ·
+    `Seller Code` · `Country` · `Brand` · `Channel` · `SKU` · `Base SKU` ·
     `Campaign / Promotion Name` · `Campaign Type` · `Stock Locked / Reserved` ·
     `Promo Start Date` · `Promo End Date` · `Stock for Base SKU` ·
     `Total Reserved - All Campaigns`
     """)
+    st.stop()
+
+# ── Stock validation — block analysis if any locked scope is missing stock ────
+missing_stock = st.session_state.get("missing_stock", [])
+if missing_stock:
+    st.error(
+        "⛔ **Analysis blocked — stock missing for the following scopes.**\n\n"
+        "Every locked promotion must have a `Stock for Base SKU` value before "
+        "OOS calculations can run. Fill in the missing values in your sheet and re-upload.\n"
+    )
+    st.markdown("**Missing stock — Seller · Country · Base SKU:**")
+    for scope in missing_stock:
+        st.markdown(f"- {scope}")
+    st.markdown("---")
+    st.caption(
+        "💡 Stock is shared per Seller + Country + Base SKU. "
+        "You only need to enter the value once per combination — "
+        "the tool applies it to all promo rows with the same scope."
+    )
     st.stop()
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
