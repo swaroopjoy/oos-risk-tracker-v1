@@ -215,22 +215,15 @@ def parse_upload(file) -> tuple[list[dict], dict]:
             nominated = gn(row, "nominated")
 
             # ── Base SKU resolution ──────────────────────────────────────
-            # Priority: explicit Base SKU column → parse from SKU string
+            # ALWAYS parse all components from the SKU string first.
+            # The Base SKU column is only used as a fallback when the SKU
+            # string is a plain code with no multiplier (e.g. "40000344")
+            # and cannot be self-parsed into base+mult.
+            components = parse_sku(raw_sku)
             raw_base_sku_col = gv(row, "base_sku")
-            if raw_base_sku_col:
-                # Column present — derive multiplier by comparing to SKU string
-                components_from_sku = parse_sku(raw_sku)
-                # Map base SKUs from parsed components, override with column value
-                # For single-component SKUs the column IS the answer
-                components = []
-                for comp in components_from_sku:
-                    if comp["base"] == raw_base_sku_col.strip():
-                        components.append(comp)
-                # If no match found (e.g. combo), fall back to full parse
-                if not components:
-                    components = components_from_sku
-            else:
-                components = parse_sku(raw_sku)
+            if not components and raw_base_sku_col:
+                # SKU string unparseable — use Base SKU column directly, mult=1
+                components = [{"base": raw_base_sku_col.strip(), "mult": 1}]
 
             # Store stock for ALL components — shared per seller+country
             for comp in components:
