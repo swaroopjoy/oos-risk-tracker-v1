@@ -145,7 +145,7 @@ def parse_upload(file) -> tuple[list[dict], dict]:
                       "Nominated Stock", "Nominated stock"],
         "res_mp":    ["Reserved by Marketplace",                     # ← NEW alias
                       "Reserved by MP"],
-        "res_dksh":  ["Reserved by DKSH"],
+        "res_seller": ["Reserved by Seller", "Reserved by DKSH"],
         "res_graas": ["Reserved by Graas"],
     }
 
